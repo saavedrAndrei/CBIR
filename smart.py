@@ -61,5 +61,5 @@ for i, search_des in enumerate(dataset_search_descriptors):
 
 df = pd.concat(dfs, ignore_index=True)
 # Write dataframe to html file
-with open('output.html', 'w') as f:
+with open('output_smart.html', 'w') as f:
     f.write(df.to_html(index=False, escape=False))
