@@ -1,56 +1,87 @@
-import cv2
+from functools import partial
+from typing import List, Dict, Tuple
 import os
+import numpy as np
+import cv2
 import pandas as pd
 
-dataset_index_path = './database/c_index/'
-dataset_index = []
-for filename in os.listdir(dataset_index_path):
-    img_index = cv2.imread(os.path.join(dataset_index_path, filename))
-    dataset_index.append({'path': os.path.join(dataset_index_path, filename), 'img': img_index})
 
-dataset_search_path = './database/search/'
-dataset_search = []
-for filename in os.listdir(dataset_search_path):
-    img_search = cv2.imread(os.path.join(dataset_search_path, filename))
-    dataset_search.append({'path': os.path.join(dataset_search_path, filename), 'img': img_search})
+def read_images(path: str) -> List[Dict[str, any]]:
+    return [
+        {'path': os.path.join(path, filename), 'img': cv2.imread(os.path.join(path, filename))}
+        for filename in os.listdir(path)
+    ]
 
-sift = cv2.xfeatures2d.SIFT_create()
-bf = cv2.BFMatcher()
 
-dataset_search_descriptors = []
-for img in dataset_search:
-    kp, des = sift.detectAndCompute(img['img'], None)
-    dataset_search_descriptors.append({'path': img['path'], 'des': des})
+def detect_and_compute(sift: cv2.SIFT, img_dict: Dict[str, any]) -> Dict[str, any]:
+    # Convert the image to HSV color space
+    hsv_img = cv2.cvtColor(img_dict['img'], cv2.COLOR_BGR2HSV)
+    # Compute the grid-based color histogram descriptor
+    rows = 4
+    cols = 4
+    hist = []
+    for i in range(rows):
+        for j in range(cols):
+            # Define the region of interest (ROI) for the current cell
+            cell_h = hsv_img.shape[0] // rows
+            cell_w = hsv_img.shape[1] // cols
+            roi = hsv_img[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
+            # Compute the color histogram for the ROI
+            hist_cell = cv2.calcHist([roi], [0, 1, 2], None, [8, 8, 8], [0, 180, 0, 256, 0, 256])
+            # Normalize the histogram
+            hist_cell = cv2.normalize(hist_cell, hist_cell).flatten()
+            # Add the histogram of the current cell to the descriptor
+            hist.extend(hist_cell)
+    # Convert the descriptor to a NumPy array
+    des = np.array(hist)
+    return {'path': img_dict['path'], 'des': des}
 
-dataset_index_descriptors = []
-for img in dataset_index:
-    kp, des = sift.detectAndCompute(img['img'], None)
-    dataset_index_descriptors.append({'path': img['path'], 'des': des})
 
-similarity_scores = []
-dfs = []
-for i, search_des in enumerate(dataset_search_descriptors):
-    search_image_path = search_des['path']
-    search_image_name = os.path.splitext(os.path.basename(search_image_path))[0]
+def match_images(bf: cv2.FlannBasedMatcher, search_des: Dict[str, any],
+                 index_descriptors: List[Dict[str, any]]) -> pd.DataFrame:
     top_scores = []
-    for j, index_des in enumerate(dataset_index_descriptors):
-        index_image_path = index_des['path']
-        index_image_name = os.path.splitext(os.path.basename(index_image_path))[0]
-        matches = bf.knnMatch(search_des['des'], index_des['des'], k=2)
-        good_matches = []
-        for m, n in matches:
-            if m.distance < 0.75 * n.distance:
-                good_matches.append(m)
-        score = len(good_matches)
-        top_scores.append({'Index Image Path': index_image_path, 'Similarity Score': score})
-    top_scores_df = pd.DataFrame(top_scores).sort_values(by='Similarity Score', ascending=False).head(20)
-    top_scores_df.insert(0, 'Search Image Path', search_image_path)
-    top_scores_df.insert(2, 'Search Image', f'<img src="{search_image_path}">')
+    for index_des in index_descriptors:
+        index_img = cv2.imread(index_des['path'])
+        search_img = cv2.imread(search_des['path'])
+
+        # Compute the color histogram descriptors
+        index_hist = cv2.calcHist([index_img], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+        search_hist = cv2.calcHist([search_img], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+
+        # Normalize the histograms
+        cv2.normalize(index_hist, index_hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+        cv2.normalize(search_hist, search_hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+
+        # Compute the distance between the histograms
+        dist = cv2.compareHist(search_hist, index_hist, cv2.HISTCMP_CHISQR)
+
+        top_scores.append({'Index Image Path': index_des['path'], 'Similarity Score': dist})
+    top_scores_df = pd.DataFrame(top_scores).sort_values(by='Similarity Score', ascending=True).head(20)
+    top_scores_df.insert(0, 'Search Image Path', search_des['path'])
+    top_scores_df.insert(2, 'Search Image', f'<img src="{search_des["path"]}">')
     top_scores_df.insert(3, 'Index Image', top_scores_df['Index Image Path'].apply(lambda x: f'<img src="{x}">'))
     top_scores_df = top_scores_df[['Search Image', 'Index Image', 'Similarity Score']]
-    dfs.append(top_scores_df)
+    return top_scores_df
 
-df = pd.concat(dfs, ignore_index=True)
-# Write dataframe to html file
-with open('output_smart_sift.html', 'w') as f:
-    f.write(df.to_html(index=False, escape=False))
+
+def main():
+    dataset_index_path = './database/c_index/'
+    dataset_search_path = './database/search/'
+    sift = cv2.xfeatures2d.SIFT_create()
+    bf = cv2.FlannBasedMatcher()
+    dataset_index = read_images(dataset_index_path)
+    dataset_search = read_images(dataset_search_path)
+
+    dataset_search_descriptors = list(map(partial(detect_and_compute, sift), dataset_search))
+    dataset_index_descriptors = list(map(partial(detect_and_compute, sift), dataset_index))
+
+    match_images_partial = partial(match_images, bf)
+    similarity_scores = list(map(match_images_partial, dataset_search_descriptors, [dataset_index_descriptors] * len(dataset_search_descriptors)))
+
+    df = pd.concat(similarity_scores, ignore_index=True)
+    with open('output_smart_sift.html', 'w') as f:
+        f.write(df.to_html(index=False, escape=False))
+
+
+if __name__ == '__main__':
+    main()
