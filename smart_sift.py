@@ -17,8 +17,8 @@ def detect_and_compute(sift: cv2.SIFT, img_dict: Dict[str, any]) -> Dict[str, an
     # Convert the image to HSV color space
     hsv_img = cv2.cvtColor(img_dict['img'], cv2.COLOR_BGR2HSV)
     # Compute the grid-based color histogram descriptor
-    rows = 4
-    cols = 4
+    rows = 8
+    cols = 8
     hist = []
     for i in range(rows):
         for j in range(cols):
@@ -32,26 +32,26 @@ def detect_and_compute(sift: cv2.SIFT, img_dict: Dict[str, any]) -> Dict[str, an
             hist_cell = cv2.normalize(hist_cell, hist_cell).flatten()
             # Add the histogram of the current cell to the descriptor
             hist.extend(hist_cell)
-    # Convert the descriptor to a NumPy array
-    des = np.array(hist)
+    # Compute the SIFT descriptor
+    gray_img = cv2.cvtColor(img_dict['img'], cv2.COLOR_BGR2GRAY)
+    keypoints, descriptors = sift.detectAndCompute(gray_img, None)
+    # Concatenate the SIFT descriptor and the grid-based color histogram descriptor
+    des = np.concatenate([descriptors.flatten(), np.array(hist)], axis=0)
     return {'path': img_dict['path'], 'des': des}
 
 
-def match_images(bf: cv2.FlannBasedMatcher, search_des: Dict[str, any],
+def match_images(search_des: Dict[str, any],
                  index_descriptors: List[Dict[str, any]]) -> pd.DataFrame:
     top_scores = []
     for index_des in index_descriptors:
         index_img = cv2.imread(index_des['path'])
         search_img = cv2.imread(search_des['path'])
-
         # Compute the color histogram descriptors
         index_hist = cv2.calcHist([index_img], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
         search_hist = cv2.calcHist([search_img], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-
         # Normalize the histograms
         cv2.normalize(index_hist, index_hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
         cv2.normalize(search_hist, search_hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
-
         # Compute the distance between the histograms
         dist = cv2.compareHist(search_hist, index_hist, cv2.HISTCMP_CHISQR)
 
